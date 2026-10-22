@@ -25,7 +25,7 @@ app.config['MAIL_PORT'] = 465
 app.config['MAIL_USE_TLS'] = False
 app.config['MAIL_USE_SSL'] = True
 app.config['MAIL_USERNAME'] = 'your_email@gmail.com'      
-app.config['MAIL_PASSWORD'] = 'your_app_password'          
+app.config['MAIL_PASSWORD'] = 'your_app_password'         
 app.config['MAIL_DEFAULT_SENDER'] = 'your_email@gmail.com'
 
 mail = Mail(app)
@@ -38,10 +38,15 @@ scheduler = APScheduler()
 scheduler.init_app(app)
 
 # ==============================================================================
-# 2. DATABASE SETUP
+# 2. DATABASE SETUP (With timeout=10.0 to prevent locking errors)
 # ==============================================================================
+def get_db_connection(db_name='shm_enterprise_v3.db'):
+    conn = sqlite3.connect(db_name, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 def init_db():
-    conn = sqlite3.connect('shm_enterprise_v3.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -222,7 +227,7 @@ def login():
     if request.method == 'POST':
         email = request.form.get('email')
         password = request.form.get('password')
-        conn = sqlite3.connect('shm_enterprise_v3.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT email, password, role FROM users WHERE email = ? AND password = ?', (email, password))
         user = cursor.fetchone()
@@ -247,7 +252,7 @@ def register():
         password = request.form.get('password')
         role = 'admin' if 'admin' in email.lower() else 'engineer'
         try:
-            conn = sqlite3.connect('shm_enterprise_v3.db')
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute('INSERT INTO users (email, password, role) VALUES (?, ?, ?)', (email, password, role))
             conn.commit()
@@ -266,7 +271,7 @@ def logout():
 @app.route('/admin')
 def admin_dashboard():
     if 'admin_email' not in session: return redirect(url_for('login'))
-    conn = sqlite3.connect('shm_enterprise_v3.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT email, address, deformation, status, timestamp FROM inspections ORDER BY id DESC')
     all_inspections = cursor.fetchall()
@@ -308,7 +313,6 @@ def home():
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     '''))
 
-    # SIDEBAR CSS UPDATE (WITH HIGH-TECH SATELLITE DARK SPACE BACKGROUND)
     custom_css = """
     <style>
         body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; overflow: hidden; }
@@ -327,7 +331,6 @@ def home():
         .brand i { color: #38bdf8; }
         .user-info { font-size: 11px; color: #22c55e; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(56, 189, 248, 0.2); padding-bottom: 6px; }
         
-        /* Glassmorphism for Panels */
         .panel { 
             background: rgba(15, 23, 42, 0.75); 
             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
@@ -363,7 +366,7 @@ def home():
     banner_html = f'''<div style="position:fixed; top:12px; right:20px; background:rgba(15, 23, 42, 0.9); color:#f8fafc; padding:6px 14px; border-radius:6px; z-index:9998; border:1px solid #38bdf8; font-size:12px; font-weight:600; box-shadow: 0 4px 10px rgba(0,0,0,0.5);"><i class="fa-solid fa-map-pin" style="color: #38bdf8;"></i> Location: {query_text}</div>'''
     my_map.get_root().html.add_child(Element(banner_html))
 
-    conn = sqlite3.connect('shm_enterprise_v3.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT address, deformation, status FROM inspections WHERE email = ? ORDER BY id DESC LIMIT 2', (current_user,))
     history_rows = cursor.fetchall()
@@ -416,93 +419,106 @@ def home():
 
     map_name = my_map.get_name()
     
-    click_js = f"""
+    # FIXED: Changed f""" to standard """ and escaped JS curly braces where needed to prevent syntax errors
+    click_js = """
     <script>
-    document.addEventListener('DOMContentLoaded', function() {{
-        var map_instance = {map_name};
-        var currentQuery = "{query_text}";
+    document.addEventListener('DOMContentLoaded', function() {
+        var map_instance = """ + map_name + """;
+        var currentQuery = '""" + query_text + """';
         
-        document.getElementById('search-btn').addEventListener('click', function() {{
+        document.getElementById('search-btn').addEventListener('click', function() {
             var query = document.getElementById('custom-search').value;
             if(!query) return;
             fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(query))
                 .then(res => res.json())
-                .then(data => {{
-                    if(data && data.length > 0) {{
+                .then(data => {
+                    if(data && data.length > 0) {
                         window.location.href = '/?lat=' + data[0].lat + '&lng=' + data[0].lon + '&zoom=19&q=' + encodeURIComponent(data[0].display_name.split(',')[0]);
-                    }}
-                }});
-        }});
+                    }
+                });
+        });
 
-        map_instance.on('click', function(e) {{
+        document.getElementById('gps-btn').addEventListener('click', function() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(function(position) {
+                    var lat = position.coords.latitude;
+                    var lng = position.coords.longitude;
+                    window.location.href = '/?lat=' + lat + '&lng=' + lng + '&zoom=19&q=Current+Location';
+                }, function(error) {
+                    alert('Geolocation failed or denied.');
+                });
+            } else {
+                alert('Geolocation is not supported by this browser.');
+            }
+        });
+
+        map_instance.on('click', function(e) {
             var lat = e.latlng.lat; var lng = e.latlng.lng;
             var panelContent = document.getElementById('panel-content');
             panelContent.innerHTML = "<div style='text-align:center; padding:10px;'><i class='fa-solid fa-circle-notch fa-spin' style='color:#38bdf8;'></i> Analyzing SAR...</div>";
 
             fetch('/get_value?lat=' + lat + '&lng=' + lng)
                 .then(res => res.json())
-                .then(data => {{
-                    if(data.error || data.value === null) {{
+                .then(data => {
+                    if(data.error || data.value === null) {
                         panelContent.innerHTML = "<div style='color:#ef4444; text-align:center;'>No building data here.</div>";
                         return;
-                    }}
+                    }
                     var val = data.value; var absVal = Math.abs(val);
                     var status = "STABLE"; var color = "#22c55e"; var solution = "Structure is safe (10+ yrs safe lifespan).";
-                    if(absVal >= 0.8 && absVal <= 2.0) {{ status = "WARNING"; color = "#eab308"; solution = "<b>Warning Timeline:</b> Early shift detected. Recommended NDT test & retrofitting within <b>3 to 6 months</b>."; }} 
-                    else if(absVal > 2.0) {{ status = "HIGH DANGER"; color = "#ef4444"; var estMonths = Math.max(2, Math.round((3.0 - absVal) * 6)); solution = "<b>Collapse Risk:</b> Severe structural failure predicted within <b>" + estMonths + " to 6 months</b> if unattended. Evacuation required!"; fetch('/send_alert_email?lat=' + lat + '&lng=' + lng + '&def=' + val); }}
+                    if(absVal >= 0.8 && absVal <= 2.0) { status = "WARNING"; color = "#eab308"; solution = "<b>Warning Timeline:</b> Early shift detected. Recommended NDT test & retrofitting within <b>3 to 6 months</b>."; } 
+                    else if(absVal > 2.0) { status = "HIGH DANGER"; color = "#ef4444"; var estMonths = Math.max(2, Math.round((3.0 - absVal) * 6)); solution = "<b>Collapse Risk:</b> Severe structural failure predicted within <b>" + estMonths + " to 6 months</b> if unattended. Evacuation required!"; fetch('/send_alert_email?lat=' + lat + '&lng=' + lng + '&def=' + val); }
                     
                     fetch('/save_inspection?address=' + encodeURIComponent(currentQuery) + '&lat=' + lat + '&lng=' + lng + '&def=' + val + '&status=' + status);
 
-                    panelContent.innerHTML = `
-                        <div class="info-row"><span>Latitude:</span> <span class="info-val">` + lat.toFixed(4) + `</span></div>
-                        <div class="info-row"><span>Longitude:</span> <span class="info-val">` + lng.toFixed(4) + `</span></div>
-                        <div class="info-row"><span>Deformation:</span> <span class="info-val" style="color:` + color + `;">` + val.toFixed(2) + ` cm</span></div>
-                        <div style="margin:6px 0; background:rgba(0,0,0,0.5); padding:6px; text-align:center; border:1px solid ` + color + `; border-radius: 4px;">
-                            <b style="color:` + color + `; font-size:11px;">` + status + `</b>
-                        </div>
-                        <div class="solution-box">` + solution + `</div>
-                    `;
-                }});
-        }});
-    }});
+                    panelContent.innerHTML = 
+                        '<div class="info-row"><span>Latitude:</span> <span class="info-val">' + lat.toFixed(4) + '</span></div>' +
+                        '<div class="info-row"><span>Longitude:</span> <span class="info-val">' + lng.toFixed(4) + '</span></div>' +
+                        '<div class="info-row"><span>Deformation:</span> <span class="info-val" style="color:' + color + ';">' + val.toFixed(2) + ' cm</span></div>' +
+                        '<div style="margin:6px 0; background:rgba(0,0,0,0.5); padding:6px; text-align:center; border:1px solid ' + color + '; border-radius: 4px;">' +
+                            '<b style="color:' + color + '; font-size:11px;">' + status + '</b>' +
+                        '</div>' +
+                        '<div class="solution-box">' + solution + '</div>';
+                });
+        });
+    });
 
-    function analyzeImage() {{
+    function analyzeImage() {
         var fileInput = document.getElementById('damage-image-input');
         var resultBox = document.getElementById('image-result-box');
         
-        if(fileInput.files.length === 0) {{
+        if(fileInput.files.length === 0) {
             resultBox.innerHTML = "<div style='color:#ef4444; font-size:10px; margin-top:5px; text-align:center;'>⚠️ Please select a photo!</div>";
             return;
-        }}
+        }
         
         var formData = new FormData();
         formData.append('image', fileInput.files[0]);
 
         resultBox.innerHTML = "<div style='color:#38bdf8; font-size:11px; margin-top:10px; text-align:center;'><i class='fa-solid fa-spinner fa-spin'></i> AI Scanning Damage Heatmap...</div>";
 
-        fetch('/upload_damage_image', {{ method: 'POST', body: formData }})
+        fetch('/upload_damage_image', { method: 'POST', body: formData })
             .then(res => res.json())
-            .then(data => {{
-                if(data.success) {{
-                    resultBox.innerHTML = `
-                        <div class="ai-result-card" style="border-color:` + data.color + `;">
-                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
-                                <i class="fa-solid fa-shield-halved" style="color:` + data.color + `; font-size:14px;"></i>
-                                <b style="color:` + data.color + `; font-size:11px;">` + data.damage_type + `</b>
-                            </div>
-                            <div style="font-size:10px; color:#cbd5e1; margin-bottom:6px;">
-                                Severity: <b style="color:` + data.color + `;">` + data.severity + `</b>
-                            </div>
-                            <div style="font-size:9.5px; color:#e2e8f0; border-top:1px dashed rgba(255,255,255,0.2); padding-top:6px;">
-                                <i class="fa-solid fa-screwdriver-wrench"></i> ` + data.recommendation + `
-                            </div>
-                        </div>
-                    `;
-                }} else {{
+            .then(data => {
+                if(data.success) {
+                    resultBox.innerHTML = 
+                        '<div class="ai-result-card" style="border-color:' + data.color + ';">' +
+                            '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">' +
+                                '<i class="fa-solid fa-shield-halved" style="color:' + data.color + '; font-size:14px;"></i>' +
+                                '<b style="color:' + data.color + '; font-size:11px;">' + data.damage_type + '</b>' +
+                            '</div>' +
+                            '<div style="font-size:10px; color:#cbd5e1; margin-bottom:6px;">' +
+                                'Severity: <b style="color:' + data.color + ';">' + data.severity + '</b>' +
+                            '</div>' +
+                            '<div style="font-size:9.5px; color:#e2e8f0; border-top:1px dashed rgba(255,255,255,0.2); padding-top:6px;">' +
+                                '<i class="fa-solid fa-screwdriver-wrench"></i> ' + data.recommendation +
+                            '</div>' +
+                        '</div>';
+                } else {
                     resultBox.innerHTML = "<div style='color:#ef4444; font-size:10px;'>Error scanning image.</div>";
-                }}
-            }});
-    }}
+                }
+            });
+    }
     </script>
     """
     my_map.get_root().html.add_child(Element(click_js))
@@ -531,7 +547,7 @@ def save_inspection():
     lng = request.args.get('lng', type=float)
     def_val = request.args.get('def', type=float)
     status = request.args.get('status', default='STABLE')
-    conn = sqlite3.connect('shm_enterprise_v3.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT INTO inspections (email, address, lat, lng, deformation, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)', 
                    (email, address, lat, lng, def_val, status, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
@@ -583,4 +599,4 @@ def send_alert_email():
         return jsonify({'success': False, 'error': str(e)})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
