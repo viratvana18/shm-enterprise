@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime
 import threading
 import os
+import json
 from werkzeug.utils import secure_filename
 
 # ==============================================================================
@@ -74,46 +75,65 @@ def init_db():
 init_db()
 
 # ==============================================================================
-# 3. GOOGLE EARTH ENGINE INITIALIZATION
+# 3. GOOGLE EARTH ENGINE INITIALIZATION (Safe Service Account Mode)
 # ==============================================================================
+GEE_INITIALIZED = False
 try:
-    ee.Initialize(project='cobalt-verve-381300')
-    print("Google Earth Engine Initialized Successfully! 🔥")
+    if os.path.exists('gee_key.json'):
+        with open('gee_key.json', 'r') as f:
+            key_data = json.load(f)
+            sa_email = key_data.get('client_email')
+            
+        credentials = ee.ServiceAccountCredentials(sa_email, 'gee_key.json')
+        ee.Initialize(credentials, project='cobalt-verve-381300')
+        GEE_INITIALIZED = True
+        print("Google Earth Engine Initialized Successfully with Service Account! 🔥")
+    else:
+        print("Warning: 'gee_key.json' not found. GEE features will be disabled.")
 except Exception as e:
     print(f"Error Initializing GEE: {e}")
 
 # ==============================================================================
-# 4. SATELLITE PROCESSING ALGORITHMS
+# 4. SATELLITE PROCESSING ALGORITHMS (Safe Wrapper)
 # ==============================================================================
 def get_deformation_map():
-    world_cover = ee.ImageCollection("ESA/WorldCover/v100").first()
-    building_mask = world_cover.eq(50)
+    try:
+        if not GEE_INITIALIZED:
+            return None
+        world_cover = ee.ImageCollection("ESA/WorldCover/v100").first()
+        building_mask = world_cover.eq(50)
 
-    image_past = ee.ImageCollection('COPERNICUS/S1_GRD') \
-        .filterDate('2026-01-01', '2026-02-01') \
-        .filter(ee.Filter.eq('instrumentMode', 'IW')) \
-        .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
-        .select('VV').mean().focal_median(30, 'circle', 'meters')
+        image_past = ee.ImageCollection('COPERNICUS/S1_GRD') \
+            .filterDate('2026-01-01', '2026-02-01') \
+            .filter(ee.Filter.eq('instrumentMode', 'IW')) \
+            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
+            .select('VV').mean().focal_median(30, 'circle', 'meters')
 
-    image_recent = ee.ImageCollection('COPERNICUS/S1_GRD') \
-        .filterDate('2026-09-01', '2026-10-01') \
-        .filter(ee.Filter.eq('instrumentMode', 'IW')) \
-        .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
-        .select('VV').mean().focal_median(30, 'circle', 'meters')
+        image_recent = ee.ImageCollection('COPERNICUS/S1_GRD') \
+            .filterDate('2026-09-01', '2026-10-01') \
+            .filter(ee.Filter.eq('instrumentMode', 'IW')) \
+            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
+            .select('VV').mean().focal_median(30, 'circle', 'meters')
 
-    deformation = image_recent.subtract(image_past)
-    return deformation.updateMask(building_mask)
+        deformation = image_recent.subtract(image_past)
+        return deformation.updateMask(building_mask)
+    except Exception as e:
+        print(f"GEE processing error: {e}")
+        return None
 
 def add_ee_layer(self, ee_image_object, vis_params, name, opacity=0.8):
-    map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
-    folium.raster_layers.TileLayer(
-        tiles=map_id_dict['tile_fetcher'].url_format,
-        attr='Map Data &copy; Google Earth Engine',
-        name=name,
-        overlay=True,
-        control=True,
-        opacity=opacity 
-    ).add_to(self)
+    try:
+        map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
+        folium.raster_layers.TileLayer(
+            tiles=map_id_dict['tile_fetcher'].url_format,
+            attr='Map Data &copy; Google Earth Engine',
+            name=name,
+            overlay=True,
+            control=True,
+            opacity=opacity 
+        ).add_to(self)
+    except Exception as e:
+        print(f"Error adding EE layer: {e}")
 
 folium.Map.add_ee_layer = add_ee_layer
 
@@ -306,7 +326,8 @@ def home():
     folium.Marker([lat, lng], popup=f"Location: {query_text}", tooltip="You are here", icon=folium.Icon(color="red", icon="crosshairs", prefix="fa")).add_to(my_map)
 
     deformation_map = get_deformation_map()
-    my_map.add_ee_layer(deformation_map, {'min': -2.5, 'max': 2.5, 'palette': ['red', 'yellow', 'green', 'yellow', 'red']}, 'All Buildings Heatmap', opacity=0.9)
+    if deformation_map is not None:
+        my_map.add_ee_layer(deformation_map, {'min': -2.5, 'max': 2.5, 'palette': ['red', 'yellow', 'green', 'yellow', 'red']}, 'All Buildings Heatmap', opacity=0.9)
     my_map.add_child(folium.LayerControl())
 
     my_map.get_root().header.add_child(Element('''
@@ -419,7 +440,6 @@ def home():
 
     map_name = my_map.get_name()
     
-    # FIXED: Changed f""" to standard """ and escaped JS curly braces where needed to prevent syntax errors
     click_js = """
     <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -535,7 +555,7 @@ def get_value():
     try:
         point = ee.Geometry.Point([lng, lat])
         sampled = get_deformation_map().reduceRegion(reducer=ee.Reducer.first(), geometry=point, scale=10).getInfo()
-        return jsonify({'value': sampled.get('VV')})
+        return jsonify({'value': sampled.get('VV') if sampled else None})
     except Exception as e: return jsonify({'error': str(e)})
 
 @app.route('/save_inspection')
