@@ -74,17 +74,23 @@ def init_db():
 
 init_db()
 
-# ==============================================================================
+# # ==============================================================================
 # 3. GOOGLE EARTH ENGINE INITIALIZATION (Safe Service Account Mode)
 # ==============================================================================
 GEE_INITIALIZED = False
 try:
-    if os.path.exists('gee_key.json'):
-        with open('gee_key.json', 'r') as f:
+    # Render cloud path or Local path
+    render_path = '/etc/secrets/gee_key.json'
+    local_path = 'gee_key.json'
+    
+    key_path = render_path if os.path.exists(render_path) else local_path
+
+    if os.path.exists(key_path):
+        with open(key_path, 'r') as f:
             key_data = json.load(f)
             sa_email = key_data.get('client_email')
             
-        credentials = ee.ServiceAccountCredentials(sa_email, 'gee_key.json')
+        credentials = ee.ServiceAccountCredentials(sa_email, key_path)
         ee.Initialize(credentials, project='cobalt-verve-381300')
         GEE_INITIALIZED = True
         print("Google Earth Engine Initialized Successfully with Service Account! 🔥")
@@ -92,7 +98,6 @@ try:
         print("Warning: 'gee_key.json' not found. GEE features will be disabled.")
 except Exception as e:
     print(f"Error Initializing GEE: {e}")
-
 # ==============================================================================
 # 4. SATELLITE PROCESSING ALGORITHMS (Safe Wrapper)
 # ==============================================================================
